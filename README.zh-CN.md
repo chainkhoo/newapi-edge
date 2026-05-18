@@ -68,6 +68,33 @@ curl -sS https://<CHILD_DOMAIN>/healthz      # 应返回 "ok"
 
 把 New API 客户端的 base URL 改成 `https://<CHILD_DOMAIN>` 即可。
 
+### 另一种方式：直接用预构建镜像（不需要 `git clone`）
+
+每次 push 到 `main` 或打 tag 都会自动构建多架构镜像（`linux/amd64` + `linux/arm64`）推到 GHCR：
+
+```bash
+docker run -d \
+  --name newapi-edge \
+  --restart unless-stopped \
+  -p 80:80 -p 443:443 -p 443:443/udp \
+  -v newapi_edge_data:/data \
+  -v newapi_edge_config:/config \
+  -e CHILD_DOMAIN=api-cn.example.com \
+  -e ORIGIN_IP=203.0.113.10 \
+  -e ORIGIN_HOST=api.example.com \
+  -e ACME_EMAIL=you@example.com \
+  -e NODE_NAME=edge-1 \
+  ghcr.io/chainkhoo/newapi-edge:latest
+```
+
+可用的镜像 tag：
+- `ghcr.io/chainkhoo/newapi-edge:latest` —— `main` 分支最新
+- `ghcr.io/chainkhoo/newapi-edge:v0.1.0` —— 精确版本
+- `ghcr.io/chainkhoo/newapi-edge:0.1` —— minor 版本号轨
+- `ghcr.io/chainkhoo/newapi-edge:sha-<短哈希>` —— 锁定到具体 commit
+
+权衡：镜像里已经烤进了 Caddyfile，想自定义路径白名单的话需要 fork 仓库（或者用上面 `git clone` 那条流程）。
+
 ## 配置项
 
 所有运行时配置都在 `.env`：

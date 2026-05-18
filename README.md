@@ -68,6 +68,33 @@ curl -sS https://<CHILD_DOMAIN>/healthz      # should return "ok"
 
 Point your New API clients at `https://<CHILD_DOMAIN>` instead of the origin URL. That's it.
 
+### Alternative: use the pre-built image directly (no `git clone` required)
+
+A multi-arch image (`linux/amd64` + `linux/arm64`) is published to GHCR on every push to `main` and every tagged release:
+
+```bash
+docker run -d \
+  --name newapi-edge \
+  --restart unless-stopped \
+  -p 80:80 -p 443:443 -p 443:443/udp \
+  -v newapi_edge_data:/data \
+  -v newapi_edge_config:/config \
+  -e CHILD_DOMAIN=api-cn.example.com \
+  -e ORIGIN_IP=203.0.113.10 \
+  -e ORIGIN_HOST=api.example.com \
+  -e ACME_EMAIL=you@example.com \
+  -e NODE_NAME=edge-1 \
+  ghcr.io/chainkhoo/newapi-edge:latest
+```
+
+Available image tags:
+- `ghcr.io/chainkhoo/newapi-edge:latest` — tip of `main`
+- `ghcr.io/chainkhoo/newapi-edge:v0.1.0` — exact release version
+- `ghcr.io/chainkhoo/newapi-edge:0.1` — minor track
+- `ghcr.io/chainkhoo/newapi-edge:sha-<short>` — pinned to a specific commit
+
+Trade-off: the Caddyfile is baked into the image, so customising the path allowlist requires forking the repo (or using the `git clone` flow above with the included `docker-compose.yml`).
+
 ## Configuration reference
 
 All runtime configuration lives in `.env`:
