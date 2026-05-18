@@ -1,0 +1,20 @@
+# Local environment — never commit
+.env
+
+# Caddy runtime artefacts (mounted volumes / logs)
+logs/
+data/
+config/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Misc
+*.log
+*.bak
+*.tmp

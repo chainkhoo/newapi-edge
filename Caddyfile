@@ -1,0 +1,99 @@
+# =========================================================================
+# Global options
+# =========================================================================
+{
+	email {$ACME_EMAIL}
+	admin localhost:2019
+
+	# Uncomment for staging certificates (testing without hitting LE rate limits)
+	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+}
+
+# =========================================================================
+# Edge node for New API
+#
+# Strategy:
+#   1. Only forward known New API endpoints — everything else returns 404,
+#      so the admin console, login page, and management API are NOT exposed
+#      through this edge.
+#   2. Connect directly to the origin server's IP (ORIGIN_IP), bypassing any
+#      CDN in front. The Host header and TLS SNI are rewritten to ORIGIN_HOST
+#      so the origin's vhost routing and certificate validation still work.
+#   3. Stream responses without buffering (`flush_interval -1`) so SSE / chunked
+#      replies from LLM endpoints reach the client in real time.
+# =========================================================================
+{$CHILD_DOMAIN} {
+
+	# ---- Path allowlist: extend as your New API instance enables more vendors ----
+	@api {
+		# OpenAI-compatible
+		path /v1/* /v2/*
+		# Gemini-compatible
+		path /v1beta/* /v2beta/*
+		# Anthropic-compatible (some New API forks)
+		path /anthropic/*
+		# Midjourney
+		path /mj/* /mj-fast/* /mj-turbo/* /mj-relax/*
+		# Image / video / audio vendors commonly enabled in New API
+		path /sd/* /suno/* /luma/* /kling/* /jina/* /pg/* /siliconflow/* /ideogram/*
+		# Misc
+		path /pricing /pricing/* /v1
+	}
+
+	handle @api {
+		reverse_proxy https://{$ORIGIN_IP} {
+			# Make the origin's vhost / TLS see the public hostname, not the IP
+			header_up Host {$ORIGIN_HOST}
+
+			# Preserve real client IP for the origin's logs / rate-limiter
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Real-IP {remote_host}
+
+			# Identify which edge node served the request (handy for multi-node setups)
+			header_up X-Origin-Node {$NODE_NAME}
+
+			transport http {
+				tls
+				tls_server_name {$ORIGIN_HOST}
+				# LLM completions can take a long time — give them room
+				read_timeout 600s
+				write_timeout 600s
+				dial_timeout 10s
+				keepalive 60s
+				keepalive_idle_conns 100
+			}
+
+			# Critical for SSE: do not buffer, flush as bytes arrive
+			flush_interval -1
+		}
+	}
+
+	# Public health probe (returns 200 from the edge itself, no origin hit)
+	handle /healthz {
+		respond "ok" 200
+	}
+
+	# Everything else: deny.  Admin UI, /api/*, /login, static assets — all 404.
+	handle {
+		respond "Not Found" 404
+	}
+
+	# Structured access log, auto-rotated
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 100mb
+			roll_keep 7
+			roll_keep_for 168h
+		}
+		format json
+	}
+
+	# Sensible response defaults
+	encode zstd gzip
+	header {
+		# Don't expose Caddy version
+		-Server
+		# Hide the upstream origin host from response headers
+		-X-Powered-By
+	}
+}
