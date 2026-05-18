@@ -154,12 +154,12 @@ docker start newapi-edge
 | Tag | Meaning |
 |---|---|
 | `:latest` | Tip of `main`, rebuilt on every commit to that branch |
-| `:vX.Y.Z` | Specific release version — **recommended for production** |
+| `:X.Y.Z` | Specific release version (e.g. `:0.1.1`) — **recommended for production** |
 | `:X.Y` | Minor track — automatically follows `X.Y.*` releases |
 | `:X` | Major track — automatically follows `X.*.*` releases |
 | `:sha-<short>` | Pinned to a specific commit |
 
-Production tip: pin to a specific `vX.Y.Z` and update intentionally rather than chasing `:latest`.
+Production tip: pin to a specific `X.Y.Z` and update intentionally rather than chasing `:latest`.
 
 ## Configuration reference
 
