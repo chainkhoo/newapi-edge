@@ -30,49 +30,87 @@
 
 工作原理：客户端访问 `CHILD_DOMAIN`（DNS A 记录指向边缘 VPS）。边缘节点通过 TCP/TLS 连接到 `ORIGIN_IP:443`，但 SNI 和 Host 头仍是 `ORIGIN_HOST`，源站 Web 服务器就像看到了一个正常发往 `ORIGIN_HOST` 的请求，照常路由给 New API。
 
-## 快速开始
+## 安装
 
-### 前置条件
-- 一台有公网 IPv4、开放 80 + 443 端口的 VPS。
-- Docker 20.10+ 和 `docker compose` 插件。
-- 一个你能控制的 DNS 记录（用于边缘节点的域名）。
-- 一个你控制的 New API 实例作为**源站**，能通过其公开域名的 HTTPS 证书在真实 IP 的 443 端口被访问。
+提供两种**对等**的部署方式，效果完全一致，按是否需要自定义路径白名单来选择。
 
-### 步骤
+|  | 方式 A · Docker Compose | 方式 B · 预构建镜像 |
+|---|---|---|
+| **适合场景** | 自定义 `Caddyfile`；版本化管理配置 | 最快上手；不需要源码克隆 |
+| **需要** | `git` + Docker + Compose 插件 | 仅 Docker |
+| **镜像来源** | 拉 `caddy:2-alpine` + 挂载本地 `Caddyfile` | 拉 `ghcr.io/chainkhoo/newapi-edge:<tag>`，`Caddyfile` 已烤进镜像 |
+| **改路径白名单** | 改 `Caddyfile` → `docker compose restart caddy` | Fork 仓库（CI 自动重建你的镜像），或切到方式 A |
+| **升级** | `git pull && docker compose pull && docker compose up -d` | `docker pull … && docker rm -f … && docker run …` |
+
+### 通用前置条件（两种方式都需要）
+
+- 一台公网 IPv4 的 VPS，**80 + 443/TCP 和 443/UDP** 端口对公网可达
+- Docker Engine ≥ 20.10
+- 一个你控制的 DNS A 记录，指向本 VPS —— **不要开 CDN 代理**（Cloudflare 用户：灰云图标 / "仅 DNS"）
+- 一个你控制的 New API 源站，能通过其公开域名的 HTTPS 证书在真实 IP 上访问
+
+---
+
+### 方式 A · Docker Compose
 
 ```bash
-# 1. 克隆
-git clone https://github.com/<your-org>/newapi-edge.git
+# 1. 克隆仓库
+git clone https://github.com/chainkhoo/newapi-edge.git
 cd newapi-edge
 
 # 2. 填写配置
 cp .env.example .env
-$EDITOR .env       # 填入 CHILD_DOMAIN、ORIGIN_IP、ORIGIN_HOST、ACME_EMAIL
+$EDITOR .env       # 填入 CHILD_DOMAIN、ORIGIN_IP、ORIGIN_HOST、ACME_EMAIL、NODE_NAME
 
 # 3. 配置 DNS
-#    添加 A 记录：CHILD_DOMAIN → 本 VPS 的 IPv4
-#    重要：不要开 CDN 代理（Cloudflare 上要"仅 DNS"，灰云图标）
+#    A 记录：<CHILD_DOMAIN>  →  本 VPS 的 IPv4     （仅 DNS，不开 CDN 代理）
 
 # 4. 启动
 docker compose up -d
 
-# 5. 观察证书签发
+# 5. 观察证书签发（约 30 秒）
 docker compose logs -f caddy
-#    应该在 30 秒内看到 "certificate obtained successfully"
+#    应该看到 "certificate obtained successfully"
 
 # 6. 验证
-curl -sS https://<CHILD_DOMAIN>/v1/models   # 应返回 New API 的 JSON
-curl -sS https://<CHILD_DOMAIN>/             # 应返回 404（管理界面已被屏蔽）
-curl -sS https://<CHILD_DOMAIN>/healthz      # 应返回 "ok"
+curl -sS https://<CHILD_DOMAIN>/v1/models     # → New API 的 JSON
+curl -sS https://<CHILD_DOMAIN>/              # → 404（管理界面已屏蔽）
+curl -sS https://<CHILD_DOMAIN>/healthz       # → "ok"
 ```
 
-把 New API 客户端的 base URL 改成 `https://<CHILD_DOMAIN>` 即可。
-
-### 另一种方式：直接用预构建镜像（不需要 `git clone`）
-
-每次 push 到 `main` 或打 tag 都会自动构建多架构镜像（`linux/amd64` + `linux/arm64`）推到 GHCR：
+**日常运维：**
 
 ```bash
+# 看实时日志
+docker compose logs -f caddy
+tail -f logs/access.log
+
+# 改完 Caddyfile 热加载（零停机）
+docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
+
+# 升级 Caddy
+docker compose pull && docker compose up -d
+
+# 停止 / 重启
+docker compose down
+docker compose up -d
+```
+
+---
+
+### 方式 B · 预构建镜像（`docker run`）
+
+每次 push 到 `main` 或打 `v*` tag 都会自动构建多架构镜像（`linux/amd64` + `linux/arm64`）推到 GHCR。
+
+```bash
+# 1. 创建命名卷（Let's Encrypt 证书跨容器重建持久化）
+docker volume create newapi_edge_data
+docker volume create newapi_edge_config
+
+# 2. 配置 DNS
+#    A 记录：api-cn.example.com  →  本 VPS 的 IPv4     （仅 DNS，不开 CDN 代理）
+
+# 3. 运行容器
 docker run -d \
   --name newapi-edge \
   --restart unless-stopped \
@@ -85,15 +123,43 @@ docker run -d \
   -e ACME_EMAIL=you@example.com \
   -e NODE_NAME=edge-1 \
   ghcr.io/chainkhoo/newapi-edge:latest
+
+# 4. 观察证书签发（约 30 秒）
+docker logs -f newapi-edge
+
+# 5. 验证
+curl -sS https://api-cn.example.com/v1/models     # → New API 的 JSON
+curl -sS https://api-cn.example.com/              # → 404
+curl -sS https://api-cn.example.com/healthz       # → "ok"
 ```
 
-可用的镜像 tag：
-- `ghcr.io/chainkhoo/newapi-edge:latest` —— `main` 分支最新
-- `ghcr.io/chainkhoo/newapi-edge:v0.1.0` —— 精确版本
-- `ghcr.io/chainkhoo/newapi-edge:0.1` —— minor 版本号轨
-- `ghcr.io/chainkhoo/newapi-edge:sha-<短哈希>` —— 锁定到具体 commit
+**日常运维：**
 
-权衡：镜像里已经烤进了 Caddyfile，想自定义路径白名单的话需要 fork 仓库（或者用上面 `git clone` 那条流程）。
+```bash
+# 看实时日志
+docker logs -f newapi-edge
+
+# 升级到新镜像（数据保留在 named volumes 里）
+docker pull ghcr.io/chainkhoo/newapi-edge:latest
+docker rm -f newapi-edge
+docker run -d ...   # 和安装步骤 3 同一条命令
+
+# 停止 / 重启
+docker stop newapi-edge
+docker start newapi-edge
+```
+
+**可用的镜像 tag：**
+
+| Tag | 含义 |
+|---|---|
+| `:latest` | `main` 分支最新，每次提交后自动重建 |
+| `:vX.Y.Z` | 具体 release 版本 —— **生产环境推荐** |
+| `:X.Y` | minor 轨，自动跟随 `X.Y.*` 发布 |
+| `:X` | major 轨，自动跟随 `X.*.*` 发布 |
+| `:sha-<短哈希>` | 锁定到具体 commit |
+
+生产建议：锁定具体的 `vX.Y.Z`，主动控制升级时机，而不是追 `:latest`。
 
 ## 配置项
 

@@ -30,49 +30,87 @@ English · [中文](./README.zh-CN.md)
 
 Why this works: clients hit `CHILD_DOMAIN` (DNS A record points to the edge VPS). The edge opens a TCP/TLS connection to `ORIGIN_IP:443` and presents `ORIGIN_HOST` as the SNI / Host header. The origin's web server sees a normal request for `ORIGIN_HOST` and routes it to New API as usual.
 
-## Quick start
+## Installation
 
-### Prerequisites
-- A VPS with a public IPv4, ports 80 + 443 open.
-- Docker 20.10+ and the `docker compose` plugin.
-- A DNS record you control for the edge hostname.
-- A New API instance you control (the **origin**), reachable on its real IP at port 443 with a valid TLS certificate for its public hostname.
+Two equally-supported deployment methods — both produce the same running service. Pick based on whether you want to customise the path allowlist.
 
-### Steps
+|  | Method A · Docker Compose | Method B · Pre-built image |
+|---|---|---|
+| **Best for** | Customising `Caddyfile`; version-controlling your config | Fastest first deploy; no source checkout |
+| **Requires** | `git` + Docker + Compose plugin | Docker only |
+| **Image source** | Pulls `caddy:2-alpine`, mounts your local `Caddyfile` | Pulls `ghcr.io/chainkhoo/newapi-edge:<tag>` with `Caddyfile` baked in |
+| **Customising paths** | Edit `Caddyfile` → `docker compose restart caddy` | Fork the repo (CI rebuilds your image), or switch to Method A |
+| **Updating** | `git pull && docker compose pull && docker compose up -d` | `docker pull … && docker rm -f … && docker run …` |
+
+### Common prerequisites (both methods)
+
+- A VPS with public IPv4, ports **80 + 443/TCP and 443/UDP** open to the internet
+- Docker Engine ≥ 20.10
+- A DNS A record you control, pointing at this VPS — **not** proxied through any CDN (Cloudflare users: grey-cloud / "DNS only")
+- A New API origin you control, reachable at its real IP via HTTPS with a valid certificate for its public hostname
+
+---
+
+### Method A — Docker Compose
 
 ```bash
-# 1. Clone
-git clone https://github.com/<your-org>/newapi-edge.git
+# 1. Clone the repo
+git clone https://github.com/chainkhoo/newapi-edge.git
 cd newapi-edge
 
 # 2. Configure
 cp .env.example .env
-$EDITOR .env       # fill in CHILD_DOMAIN, ORIGIN_IP, ORIGIN_HOST, ACME_EMAIL
+$EDITOR .env       # fill in CHILD_DOMAIN, ORIGIN_IP, ORIGIN_HOST, ACME_EMAIL, NODE_NAME
 
 # 3. Point DNS
-#    Add an A record: CHILD_DOMAIN  →  <this VPS's IPv4>
-#    Do NOT enable any CDN proxy on this record (use a "DNS only" / grey-cloud record).
+#    A record:  <CHILD_DOMAIN>  →  <this VPS's IPv4>     (DNS only, no CDN proxy)
 
 # 4. Launch
 docker compose up -d
 
-# 5. Watch the certificate get issued
+# 5. Watch certificate issuance (~30 seconds)
 docker compose logs -f caddy
-#    You should see: "certificate obtained successfully" within ~30 seconds.
+#    Look for "certificate obtained successfully"
 
 # 6. Verify
-curl -sS https://<CHILD_DOMAIN>/v1/models   # should return JSON from New API
-curl -sS https://<CHILD_DOMAIN>/             # should return 404 (admin UI blocked)
-curl -sS https://<CHILD_DOMAIN>/healthz      # should return "ok"
+curl -sS https://<CHILD_DOMAIN>/v1/models     # → JSON from New API
+curl -sS https://<CHILD_DOMAIN>/              # → 404  (admin UI blocked)
+curl -sS https://<CHILD_DOMAIN>/healthz       # → "ok"
 ```
 
-Point your New API clients at `https://<CHILD_DOMAIN>` instead of the origin URL. That's it.
-
-### Alternative: use the pre-built image directly (no `git clone` required)
-
-A multi-arch image (`linux/amd64` + `linux/arm64`) is published to GHCR on every push to `main` and every tagged release:
+**Day-to-day operations:**
 
 ```bash
+# Tail live logs
+docker compose logs -f caddy
+tail -f logs/access.log
+
+# Hot-reload after editing Caddyfile (zero downtime)
+docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
+
+# Update Caddy
+docker compose pull && docker compose up -d
+
+# Stop / restart
+docker compose down
+docker compose up -d
+```
+
+---
+
+### Method B — Pre-built image (`docker run`)
+
+A multi-arch image (`linux/amd64` + `linux/arm64`) is built and published to GHCR on every push to `main` and every `v*` tag.
+
+```bash
+# 1. Create named volumes (persists Let's Encrypt certs across container recreations)
+docker volume create newapi_edge_data
+docker volume create newapi_edge_config
+
+# 2. Point DNS
+#    A record:  api-cn.example.com  →  <this VPS's IPv4>     (DNS only, no CDN proxy)
+
+# 3. Run the container
 docker run -d \
   --name newapi-edge \
   --restart unless-stopped \
@@ -85,15 +123,43 @@ docker run -d \
   -e ACME_EMAIL=you@example.com \
   -e NODE_NAME=edge-1 \
   ghcr.io/chainkhoo/newapi-edge:latest
+
+# 4. Watch certificate issuance (~30 seconds)
+docker logs -f newapi-edge
+
+# 5. Verify
+curl -sS https://api-cn.example.com/v1/models     # → JSON from New API
+curl -sS https://api-cn.example.com/              # → 404
+curl -sS https://api-cn.example.com/healthz       # → "ok"
 ```
 
-Available image tags:
-- `ghcr.io/chainkhoo/newapi-edge:latest` — tip of `main`
-- `ghcr.io/chainkhoo/newapi-edge:v0.1.0` — exact release version
-- `ghcr.io/chainkhoo/newapi-edge:0.1` — minor track
-- `ghcr.io/chainkhoo/newapi-edge:sha-<short>` — pinned to a specific commit
+**Day-to-day operations:**
 
-Trade-off: the Caddyfile is baked into the image, so customising the path allowlist requires forking the repo (or using the `git clone` flow above with the included `docker-compose.yml`).
+```bash
+# Tail live logs
+docker logs -f newapi-edge
+
+# Update to a new image (state persists in named volumes)
+docker pull ghcr.io/chainkhoo/newapi-edge:latest
+docker rm -f newapi-edge
+docker run -d ...   # same command as install step 3
+
+# Stop / restart
+docker stop newapi-edge
+docker start newapi-edge
+```
+
+**Available image tags:**
+
+| Tag | Meaning |
+|---|---|
+| `:latest` | Tip of `main`, rebuilt on every commit to that branch |
+| `:vX.Y.Z` | Specific release version — **recommended for production** |
+| `:X.Y` | Minor track — automatically follows `X.Y.*` releases |
+| `:X` | Major track — automatically follows `X.*.*` releases |
+| `:sha-<short>` | Pinned to a specific commit |
+
+Production tip: pin to a specific `vX.Y.Z` and update intentionally rather than chasing `:latest`.
 
 ## Configuration reference
 
