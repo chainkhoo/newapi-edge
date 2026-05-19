@@ -172,6 +172,7 @@ All runtime configuration lives in `.env`:
 | `ORIGIN_HOST` | Public hostname your New API is normally served as | `api.example.com` |
 | `ACME_EMAIL` | Email for Let's Encrypt registration / expiry notices | `you@example.com` |
 | `NODE_NAME` | Label sent as `X-Origin-Node` header | `hk-1` |
+| `ORIGIN_TLS_OPTS` | Upstream TLS policy directive injected into the `transport http` block. Default skips upstream cert verification (most New API origins use Cloudflare Origin Cert). Set to empty for strict verification. See FAQ. | `tls_insecure_skip_verify` |
 
 The path allowlist is defined in `Caddyfile`. Defaults cover the common New API vendors (OpenAI, Gemini, Anthropic-style, Midjourney, Suno, Luma, SD, etc.). If your New API instance enables additional vendor routes, add them to the `@api` matcher and `docker compose restart caddy`.
 
@@ -243,6 +244,7 @@ docker compose up -d
 **502 / connection refused from origin**
 - `ORIGIN_IP` reachable from this VPS? Try: `docker compose exec caddy wget -qO- https://<ORIGIN_IP> --header="Host: <ORIGIN_HOST>"`.
 - Origin firewall: if you've allowlisted IPs, add this VPS's IP.
+- Caddy logs show `x509: certificate signed by unknown authority`? Your origin is presenting a certificate (likely Cloudflare Origin Cert) that the public CA chain can't verify. The default `ORIGIN_TLS_OPTS=tls_insecure_skip_verify` handles this — make sure you haven't blanked it out by mistake. See the FAQ entry on upstream TLS verification.
 
 **404 on a legitimate endpoint**
 - Your New API may use a vendor path not in the default allowlist. Add it to the `@api` matcher in `Caddyfile` and reload.
@@ -284,6 +286,27 @@ The two approaches can be **stacked**: run the official master/slave cluster in 
 ---
 
 **Why Caddy and not Nginx?**  Caddy ships with automatic Let's Encrypt and reasonable defaults for streaming proxies, so the whole thing fits in ~80 lines of `Caddyfile` with no certbot/cron plumbing. If you'd rather use Nginx, the same logic ports over in about the same amount of YAML.
+
+**Why are upstream TLS certs not verified by default? How do I turn verification on?**
+
+This edge connects directly to `ORIGIN_IP` (bypassing any CDN). When your origin is fronted by Cloudflare — the typical New API setup — the origin server presents a **Cloudflare Origin Certificate**, which only CF's network trusts; the public CA chain cannot verify it. Without skipping verification, every request from the edge would fail with HTTP 502 and `x509: certificate signed by unknown authority`.
+
+What this means for security:
+
+- **Client → edge TLS** is *always* strictly verified against the Let's Encrypt certificate Caddy obtains for `CHILD_DOMAIN`. This is what your users see and is unaffected.
+- **Edge → origin TLS** travels inside the encrypted tunnel for SNI / Host correctness, and typically runs over backbone routes (e.g. between two data centres). The cert check there is low value when the origin uses CF Origin Cert.
+
+If your origin **is not behind Cloudflare** and serves a publicly-trusted certificate for `ORIGIN_HOST` (e.g. a direct Let's Encrypt cert), enable strict verification:
+
+```bash
+# .env  (Method A)
+ORIGIN_TLS_OPTS=
+
+# or docker run  (Method B)
+-e ORIGIN_TLS_OPTS=
+```
+
+Setting `ORIGIN_TLS_OPTS=` (empty) removes the `tls_insecure_skip_verify` directive from the upstream block, and Caddy will reject any origin whose certificate isn't chained to a publicly-trusted CA.
 
 **Does this work for non–New-API backends?**  Yes — anything with a stable set of path prefixes works. Just edit the `@api` matcher.
 

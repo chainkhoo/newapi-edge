@@ -46,7 +46,7 @@
 			header_up Host {$ORIGIN_HOST}
 
 			# Preserve real client IP for the origin's logs / rate-limiter
-			header_up X-Forwarded-For {remote_host}
+			# (Caddy passes X-Forwarded-For automatically; we only override X-Real-IP)
 			header_up X-Real-IP {remote_host}
 
 			# Identify which edge node served the request (handy for multi-node setups)
@@ -55,6 +55,12 @@
 			transport http {
 				tls
 				tls_server_name {$ORIGIN_HOST}
+				# Upstream TLS verification policy — see README §Origin TLS verification.
+				# Default (from Dockerfile / .env): tls_insecure_skip_verify, because most
+				# New API origins sit behind Cloudflare and present a CF Origin Cert that
+				# the public CA chain cannot verify. Set ORIGIN_TLS_OPTS to an empty
+				# value to enable strict verification.
+				{$ORIGIN_TLS_OPTS}
 				# LLM completions can take a long time — give them room
 				read_timeout 600s
 				write_timeout 600s

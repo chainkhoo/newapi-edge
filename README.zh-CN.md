@@ -172,6 +172,7 @@ docker start newapi-edge
 | `ORIGIN_HOST` | 你的 New API 平时对外的公开域名 | `api.example.com` |
 | `ACME_EMAIL` | Let's Encrypt 注册和到期通知邮箱 | `you@example.com` |
 | `NODE_NAME` | 节点标识，会作为 `X-Origin-Node` 头传给源站 | `hk-1` |
+| `ORIGIN_TLS_OPTS` | 注入到 `transport http` 块的源站 TLS 策略指令。默认跳过源站证书校验（New API 源站大多走 Cloudflare 用 Origin Cert）。设为空开启严格校验。详见 FAQ。 | `tls_insecure_skip_verify` |
 
 路径白名单写在 `Caddyfile` 里。默认覆盖了 New API 常见的厂商接口（OpenAI、Gemini、Anthropic、Midjourney、Suno、Luma、SD 等）。如果你的 New API 启用了其他厂商，把对应路径加到 `@api` matcher 然后 `docker compose restart caddy` 即可。
 
@@ -243,6 +244,7 @@ docker compose up -d
 **502 / 连不上源站**
 - 本 VPS 能连到 `ORIGIN_IP` 吗？测试：`docker compose exec caddy wget -qO- https://<ORIGIN_IP> --header="Host: <ORIGIN_HOST>"`
 - 源站防火墙：如果设置了 IP 白名单，把本 VPS 的 IP 加进去。
+- Caddy 日志里看到 `x509: certificate signed by unknown authority`？源站返回的证书（多半是 Cloudflare Origin Cert）公网 CA 链验证不了。默认 `ORIGIN_TLS_OPTS=tls_insecure_skip_verify` 就是处理这种情况——确认你没把它清空。详见 FAQ"源站 TLS 验证"那条。
 
 **正常的 endpoint 返回 404**
 - 你的 New API 可能用了默认白名单没覆盖的厂商路径。把它加到 `Caddyfile` 的 `@api` matcher 里然后 reload。
@@ -284,6 +286,27 @@ docker compose up -d
 ---
 
 **为什么用 Caddy 不用 Nginx？** Caddy 自带 Let's Encrypt 自动签发和流式代理的合理默认值，整个项目用 80 行 `Caddyfile` 就能跑，不需要 certbot/cron 那一套。想用 Nginx 也行，思路一样，配置量差不多。
+
+**为什么默认不验证源站 TLS 证书？怎么开启严格校验？**
+
+边缘节点直连 `ORIGIN_IP`（绕过任何 CDN）。当源站走 Cloudflare 代理时（New API 站长最常见的部署方式），源站上装的是 **Cloudflare Origin Certificate**，只有 CF 网络信任它，公网 CA 链无法验证。如果不跳过校验，每次请求都会失败：HTTP 502 + `x509: certificate signed by unknown authority`。
+
+安全上的含义：
+
+- **客户端 → 边缘的 TLS** *始终*会严格校验 Caddy 为 `CHILD_DOMAIN` 申请的 Let's Encrypt 证书。这是用户能直接感知的部分，完全不受影响。
+- **边缘 → 源站的 TLS** 主要为了 SNI / Host 兼容性，通常走机房骨干网（比如两个数据中心之间）。源站用 CF Origin Cert 时校验它价值很低。
+
+如果你的源站**不走 Cloudflare**，且为 `ORIGIN_HOST` 配置了公网可信证书（比如直接的 Let's Encrypt 证书），可以开启严格校验：
+
+```bash
+# .env  （方式 A）
+ORIGIN_TLS_OPTS=
+
+# 或 docker run  （方式 B）
+-e ORIGIN_TLS_OPTS=
+```
+
+把 `ORIGIN_TLS_OPTS` 设置为空字符串，会从 transport 块里移除 `tls_insecure_skip_verify` 指令，Caddy 会拒绝任何证书无法回溯到公共可信 CA 的源站。
 
 **这个项目能给非 New API 的后端用吗？** 能。只要后端的 API 路径有固定前缀，改一下 `@api` matcher 就行。
 
